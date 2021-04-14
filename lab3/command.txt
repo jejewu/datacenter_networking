@@ -1,0 +1,1 @@
+sudo mn --topo mytopo --custom /home/wc/datacenter_networking/lab3/topology.py --controller remote --switch default,protocols=OpenFlow13 --link=tc

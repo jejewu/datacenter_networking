@@ -13,6 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+## command to bulid
+# sudo mn --controller=remote,ip=127.0.0.1 --topo tree,depth=4 --switch default,protocols=OpenFlow13 --mac --arp
+
 from ryu.base import app_manager
 from ryu.controller import ofp_event
 from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER
@@ -31,12 +34,23 @@ class SimpleSwitch13(app_manager.RyuApp):
         self.mac_to_port = {}
         self.mapping = {}
         self.data = [{9, 12, 15, 3, 6}, {10, 13, 16, 4, 1, 7}, {11, 14, 2, 5, 8}]
+        self.leaf = {4, 5, 7, 8, 11, 12, 14, 15}
+        self.leaf_port_map = {} # {number:list of number}
         self.set_tenant()
 
     def set_tenant(self):
+        
         for i in range(3):
             for j in self.data[i]:
                 self.mapping[j] = i
+        
+        list_leaf = list(self.leaf)
+        for i in range(len(list_leaf)):
+            self.leaf_port_map[list_leaf[i]] = [i*2 +1, i*2 +2]
+        
+        # for i in self.leaf:
+        #     self.logger.info("%d", i)
+        #     self.logger.info("%d, %d", self.leaf_port_map[i][0], self.leaf_port_map[i][1])
 
     # in period of handshake
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
@@ -73,8 +87,12 @@ class SimpleSwitch13(app_manager.RyuApp):
         datapath.send_msg(mod)
 
     def detect_tenant(self, dst, src):
+        # broadcast
+        if src.find("00:00:00:00:00") != -1 and dst.find("ff:ff:ff:ff:ff:ff") != -1:
+            return 2
+
         # deal switch packet
-        if src.find("00:00:00:00:00") == -1:
+        if dst.find("00:00:00:00:00") == -1:
             return 0
         # use self.mapping to search which self.data
         dst = int( dst[dst.rfind(':') + 1 : ], 16)
@@ -137,6 +155,47 @@ class SimpleSwitch13(app_manager.RyuApp):
                                   in_port=in_port, actions=actions, data=data)
         datapath.send_msg(out)
 
+    def broadcast_operation(self, msg, datapath, ofproto, parser, in_port, pkt, eth, dst, src, dpid):
+        # 4 5 7 8 11 12 14 15 self.leaf set() and self.leaf_port_map {}
+        # if not leaf switch we don't care
+        # self.logger.info("in broadcast")
+        # print("in broadcast\n")
+        if dpid not in self.leaf:
+            self.normal_operation(msg, datapath, ofproto, parser, in_port, pkt, eth, dst, src, dpid)
+            return
+        # change src mac to number
+        src_t = int( src[src.rfind(':') + 1 : ], 16 )
+        # self.logger.info("src_t %d %d %d", src_t, self.leaf_port_map[dpid][0], self.leaf_port_map[dpid][1])
+        # in src leaf switch
+        if src_t == self.leaf_port_map[dpid][0] or src_t == self.leaf_port_map[dpid][1]:
+            # self.logger.info("normal")
+            self.normal_operation(msg, datapath, ofproto, parser, in_port, pkt, eth, dst, src, dpid)
+            return
+        
+        # change src mac to number
+        src = int( src[src.rfind(':') + 1 : ], 16 )
+        data = None
+        for i in range ( len(self.leaf_port_map[dpid]) ):
+            # if in same tanant transmit and return
+            # self.logger.info("dpid %d", dpid)
+            if self.leaf_port_map[dpid][i] in self.data[self.mapping[src]]:
+                # self.logger.info("find match")
+                actions = [parser.OFPActionOutput( i+1 )]
+                if msg.buffer_id == ofproto.OFP_NO_BUFFER:
+                    data = msg.data
+                out = parser.OFPPacketOut(datapath=datapath, buffer_id=msg.buffer_id,
+                                  in_port=in_port, actions=actions, data=data)
+                datapath.send_msg(out)
+                return
+
+        # not match drop
+        actions = []
+        if msg.buffer_id == ofproto.OFP_NO_BUFFER:
+            data = msg.data
+        out = parser.OFPPacketOut(datapath=datapath, buffer_id=msg.buffer_id,
+                                  in_port=in_port, actions=actions, data=data)
+        datapath.send_msg(out)
+        
     # in period of packet_in
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
@@ -159,20 +218,26 @@ class SimpleSwitch13(app_manager.RyuApp):
             return
         dst = eth.dst
         src = eth.src
-        # import pdb
-        # pdb.set_trace()
 
         dpid = datapath.id
         self.mac_to_port.setdefault(dpid, {})
 
-        self.logger.info("packet in %s %s %s %s", dpid, src, dst, in_port)
+        # self.logger.info("packet in %s %s %s %s", dpid, src, dst, in_port)
+
+        # import pdb
+        # pdb.set_trace()
 
         # learn a mac address to avoid FLOOD next time.
         self.mac_to_port[dpid][src] = in_port
+        flow_type = self.detect_tenant(dst, src)
 
-        if self.detect_tenant(dst, src) == 1:
+        # self.logger.info(flow_type)
+        
+        if flow_type == 1:  # peer to peer
             self.additional_operation(msg, datapath, ofproto, parser, in_port, pkt, eth, dst, src, dpid)
-        else:
+        elif flow_type == 2:    # broadcast
+            self.broadcast_operation(msg, datapath, ofproto, parser, in_port, pkt, eth, dst, src, dpid)
+        else:   # other
             self.normal_operation(msg, datapath, ofproto, parser, in_port, pkt, eth, dst, src, dpid)
 
 

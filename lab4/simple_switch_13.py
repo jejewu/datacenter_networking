@@ -169,7 +169,15 @@ class SimpleSwitch13(app_manager.RyuApp):
         # in src leaf switch
         if src_t == self.leaf_port_map[dpid][0] or src_t == self.leaf_port_map[dpid][1]:
             # self.logger.info("normal")
-            self.normal_operation(msg, datapath, ofproto, parser, in_port, pkt, eth, dst, src, dpid)
+            # self.normal_operation(msg, datapath, ofproto, parser, in_port, pkt, eth, dst, src, dpid)
+            data = None
+            actions = [parser.OFPActionOutput( 3 )]
+            if msg.buffer_id == ofproto.OFP_NO_BUFFER:
+                    data = msg.data
+            out = parser.OFPPacketOut(datapath=datapath, buffer_id=msg.buffer_id,
+                                  in_port=in_port, actions=actions, data=data)
+            datapath.send_msg(out)
+            
             return
         
         # change src mac to number
